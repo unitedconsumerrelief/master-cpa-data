@@ -132,11 +132,20 @@ async def ensure_headers_exist(sheet_name: str, headers: List[str]):
         sheet_id = get_sheet_id()
         range_name = f"{sheet_name}!A1"
         
+        # Run synchronous Google API calls in thread pool with timeout
+        loop = asyncio.get_event_loop()
+        
         # Check if headers exist
-        result = sheets_service.spreadsheets().values().get(
-            spreadsheetId=sheet_id,
-            range=range_name
-        ).execute()
+        result = await asyncio.wait_for(
+            loop.run_in_executor(
+                None,
+                lambda: sheets_service.spreadsheets().values().get(
+                    spreadsheetId=sheet_id,
+                    range=range_name
+                ).execute()
+            ),
+            timeout=5.0
+        )
         
         values = result.get('values', [])
         if not values or values[0] != headers:
@@ -144,18 +153,26 @@ async def ensure_headers_exist(sheet_name: str, headers: List[str]):
             body = {
                 'values': [headers]
             }
-            sheets_service.spreadsheets().values().update(
-                spreadsheetId=sheet_id,
-                range=range_name,
-                valueInputOption='RAW',
-                body=body
-            ).execute()
+            await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: sheets_service.spreadsheets().values().update(
+                        spreadsheetId=sheet_id,
+                        range=range_name,
+                        valueInputOption='RAW',
+                        body=body
+                    ).execute()
+                ),
+                timeout=5.0
+            )
             logger.info(f"Added headers to {sheet_name} sheet")
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout ensuring headers exist for {sheet_name} sheet")
     except Exception as e:
         logger.error(f"Failed to ensure headers exist for {sheet_name}: {e}")
 
 async def append_to_sheet(sheet_name: str, rows: List[List[Any]]):
-    """Append rows to the specified sheet"""
+    """Append rows to the specified sheet with timeout handling"""
     try:
         sheet_id = get_sheet_id()
         range_name = f"{sheet_name}!A:N"
@@ -164,17 +181,30 @@ async def append_to_sheet(sheet_name: str, rows: List[List[Any]]):
             'values': rows
         }
         
-        sheets_service.spreadsheets().values().append(
-            spreadsheetId=sheet_id,
-            range=range_name,
-            valueInputOption='RAW',
-            insertDataOption='INSERT_ROWS',
-            body=body
-        ).execute()
-        
-        logger.info(f"Appended {len(rows)} rows to {sheet_name} sheet")
+        # Use asyncio timeout to prevent hanging
+        try:
+            # Run the synchronous Google API call in a thread pool with timeout
+            loop = asyncio.get_event_loop()
+            await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: sheets_service.spreadsheets().values().append(
+                        spreadsheetId=sheet_id,
+                        range=range_name,
+                        valueInputOption='RAW',
+                        insertDataOption='INSERT_ROWS',
+                        body=body
+                    ).execute()
+                ),
+                timeout=10.0  # 10 second timeout
+            )
+            logger.info(f"Appended {len(rows)} rows to {sheet_name} sheet")
+        except asyncio.TimeoutError:
+            logger.error(f"Timeout writing to {sheet_name} sheet - operation took too long")
+            raise
     except Exception as e:
         logger.error(f"Failed to append to {sheet_name} sheet: {e}")
+        raise
 
 async def read_sheet_data(sheet_name: str) -> List[List[Any]]:
     """Read all data from the specified sheet"""
@@ -276,6 +306,7 @@ async def background_cache():
 
 # API Endpoints
 @app.post("/ringba-webhook")
+@app.post("/ringba-webhook1")  # Support both endpoints
 async def ringba_webhook(request: Request):
     """Handle incoming Ringba webhook data"""
     try:
@@ -375,23 +406,27 @@ async def ringba_webhook(request: Request):
             datetime.now(timezone.utc).isoformat()
         ]
         
-        # Add to background writer queue with memory protection
-        async with background_writer_lock:
-            if len(background_writer_queue) >= MAX_QUEUE_SIZE:
-                logger.warning(f"⚠️ Queue full ({len(background_writer_queue)}), forcing immediate write")
-                # Force immediate write to prevent memory issues
-                await append_to_sheet("Ringba Raw", [row])
-                logger.info(f"📊 Emergency write: {call_id}")
-            else:
-                background_writer_queue.append(row)
-                queue_size = len(background_writer_queue)
-                logger.info(f"📝 Added to queue: {call_id} (Queue size: {queue_size})")
+        # Write directly to sheet (no background worker to avoid timeouts and costs)
+        try:
+            # Ensure headers exist first
+            headers = ["call_id","call_start_utc","did_raw","did_canon","caller_id",
+                     "duration_sec","disposition","campaign","target",
+                     "publisher_id","publisher_name",
+                     "payout","revenue","_ingested_at"]
+            await ensure_headers_exist("Ringba Raw", headers)
+            
+            # Write directly to sheet
+            await append_to_sheet("Ringba Raw", [row])
+            logger.info(f"✅ Successfully wrote call to sheet: {call_id}")
+        except Exception as e:
+            logger.error(f"❌ Error writing to sheet: {e}")
+            # Don't fail the webhook - just log the error
+            # The pull script will catch this data later
         
         # Mark as processed
         mark_processed(call_id)
         
-        logger.info(f"✅ Successfully queued call for processing: {call_id}")
-        return {"status": "queued"}
+        return {"status": "success"}
         
     except json.JSONDecodeError as e:
         logger.error(f"❌ JSON Parse Error: {e}")
@@ -542,8 +577,7 @@ async def startup_event():
         # Initialize Google Sheets
         init_google_sheets()
         
-        # Start background tasks
-        asyncio.create_task(background_writer())
+        # Start background tasks (only cache, no writer - writing is done directly in webhook)
         asyncio.create_task(background_cache())
         
         logger.info("Application started successfully")
