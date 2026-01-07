@@ -29,6 +29,7 @@ realtime_dids: Set[str] = set()
 background_writer_queue = []
 background_writer_lock = asyncio.Lock()
 db_path = "/tmp/ringba.sqlite"
+headers_verified = False  # Cache header verification to avoid repeated checks
 
 # Memory optimization: Limit queue size to prevent memory issues
 MAX_QUEUE_SIZE = 100
@@ -62,6 +63,43 @@ def normalize_did(did: str) -> str:
     """Extract last 10 digits from DID"""
     digits_only = re.sub(r'\D', '', did)
     return digits_only[-10:] if len(digits_only) >= 10 else digits_only
+
+def format_date_time(call_start_utc: str) -> tuple:
+    """Convert UTC timestamp to Date and Time columns (EDT format)"""
+    try:
+        # Parse UTC timestamp
+        if 'T' in call_start_utc:
+            # ISO format: 2025-09-09T20:43:09Z
+            dt = datetime.fromisoformat(call_start_utc.replace('Z', '+00:00'))
+        else:
+            # Try other formats
+            dt = datetime.strptime(call_start_utc, "%Y-%m-%d %H:%M:%S")
+            dt = dt.replace(tzinfo=timezone.utc)
+        
+        # Convert to EDT (America/New_York)
+        from datetime import timedelta
+        edt_tz = timezone(timedelta(hours=-4))  # Using EDT for simplicity
+        dt_edt = dt.astimezone(edt_tz)
+        
+        # Format Date: M/D/YYYY (e.g., "9/9/2025")
+        date_str = f"{dt_edt.month}/{dt_edt.day}/{dt_edt.year}"
+        
+        # Format Time: H:MM AM/PM (e.g., "3:43 PM")
+        hour = dt_edt.hour
+        minute = dt_edt.minute
+        if hour == 0:
+            time_str = f"12:{minute:02d} AM"
+        elif hour < 12:
+            time_str = f"{hour}:{minute:02d} AM"
+        elif hour == 12:
+            time_str = f"12:{minute:02d} PM"
+        else:
+            time_str = f"{hour-12}:{minute:02d} PM"
+        
+        return date_str, time_str
+    except Exception as e:
+        logger.warning(f"Error parsing date/time '{call_start_utc}': {e}")
+        return "", ""
 
 def extract_sheet_id(url_or_id: str) -> str:
     """Extract sheet ID from URL or return as-is if already an ID"""
@@ -127,10 +165,16 @@ def get_sheet_id():
     return extract_sheet_id(MASTER_CPA_DATA)
 
 async def ensure_headers_exist(sheet_name: str, headers: List[str]):
-    """Ensure headers exist in the specified sheet"""
+    """Ensure headers exist in the specified sheet (cached to avoid repeated checks)"""
+    global headers_verified
+    
+    # Skip if already verified (cache the check)
+    if headers_verified:
+        return
+    
     try:
         sheet_id = get_sheet_id()
-        range_name = f"{sheet_name}!A1"
+        range_name = f"{sheet_name}!A1:P1"  # Check full header row
         
         # Run synchronous Google API calls in thread pool with timeout
         loop = asyncio.get_event_loop()
@@ -144,11 +188,11 @@ async def ensure_headers_exist(sheet_name: str, headers: List[str]):
                     range=range_name
                 ).execute()
             ),
-            timeout=5.0
+            timeout=8.0  # Increased timeout
         )
         
         values = result.get('values', [])
-        if not values or values[0] != headers:
+        if not values or len(values) == 0 or values[0] != headers:
             # Headers don't exist or are different, add them
             body = {
                 'values': [headers]
@@ -163,19 +207,25 @@ async def ensure_headers_exist(sheet_name: str, headers: List[str]):
                         body=body
                     ).execute()
                 ),
-                timeout=5.0
+                timeout=8.0  # Increased timeout
             )
-            logger.info(f"Added headers to {sheet_name} sheet")
+            logger.info(f"✅ Added/updated headers to {sheet_name} sheet")
+            headers_verified = True
+        else:
+            logger.info(f"✅ Headers already exist in {sheet_name} sheet")
+            headers_verified = True
     except asyncio.TimeoutError:
-        logger.error(f"Timeout ensuring headers exist for {sheet_name} sheet")
+        logger.warning(f"⚠️ Timeout ensuring headers exist for {sheet_name} sheet - will retry next request")
+        # Don't set headers_verified = True so it retries
     except Exception as e:
-        logger.error(f"Failed to ensure headers exist for {sheet_name}: {e}")
+        logger.error(f"❌ Failed to ensure headers exist for {sheet_name}: {e}")
+        # Don't set headers_verified = True so it retries
 
 async def append_to_sheet(sheet_name: str, rows: List[List[Any]]):
     """Append rows to the specified sheet with timeout handling"""
     try:
         sheet_id = get_sheet_id()
-        range_name = f"{sheet_name}!A:N"
+        range_name = f"{sheet_name}!A:P"
         
         body = {
             'values': rows
@@ -196,7 +246,7 @@ async def append_to_sheet(sheet_name: str, rows: List[List[Any]]):
                         body=body
                     ).execute()
                 ),
-                timeout=10.0  # 10 second timeout
+                timeout=15.0  # 15 second timeout (increased for reliability)
             )
             logger.info(f"Appended {len(rows)} rows to {sheet_name} sheet")
         except asyncio.TimeoutError:
@@ -210,7 +260,7 @@ async def read_sheet_data(sheet_name: str) -> List[List[Any]]:
     """Read all data from the specified sheet"""
     try:
         sheet_id = get_sheet_id()
-        range_name = f"{sheet_name}!A:N"
+        range_name = f"{sheet_name}!A:P"
         
         result = sheets_service.spreadsheets().values().get(
             spreadsheetId=sheet_id,
@@ -226,7 +276,7 @@ async def write_sheet_data(sheet_name: str, data: List[List[Any]]):
     """Write data to the specified sheet (overwrites existing data)"""
     try:
         sheet_id = get_sheet_id()
-        range_name = f"{sheet_name}!A:N"
+        range_name = f"{sheet_name}!A:P"
         
         body = {
             'values': data
@@ -389,30 +439,37 @@ async def ringba_webhook(request: Request):
                 return default
             return value
         
+        # Convert call_start_utc to Date and Time
+        call_start_utc = safe_get("callStartUtc", "")
+        date_str, time_str = format_date_time(call_start_utc)
+        
         row = [
-            call_id,
-            safe_get("callStartUtc", ""),
-            did_raw,
-            did_canon,
-            caller_id,
-            safe_get("durationSec", ""),
-            safe_get("disposition", ""),
-            campaign_name or campaign_id,
-            safe_get("target", ""),
-            safe_get("publisherId", ""),
-            safe_get("publisherName", ""),
-            safe_get("payout", ""),
-            safe_get("revenue", ""),
-            datetime.now(timezone.utc).isoformat()
+            call_id,              # A: call_id
+            call_start_utc,       # B: call_start_utc
+            did_raw,              # C: did_raw
+            did_canon,            # D: did_canon
+            caller_id,            # E: caller_id
+            safe_get("durationSec", ""),  # F: duration_sec
+            safe_get("disposition", ""),  # G: disposition
+            campaign_name or campaign_id,  # H: campaign
+            safe_get("target", ""),  # I: target
+            safe_get("publisherId", ""),  # J: publisher_id
+            safe_get("publisherName", ""),  # K: publisher_name
+            safe_get("payout", ""),  # L: payout
+            safe_get("revenue", ""),  # M: revenue
+            datetime.now(timezone.utc).isoformat(),  # N: _ingested_at
+            date_str,             # O: Date
+            time_str              # P: Time
         ]
         
         # Write directly to sheet (no background worker to avoid timeouts and costs)
         try:
-            # Ensure headers exist first
+            # Ensure headers exist first (columns A-P)
             headers = ["call_id","call_start_utc","did_raw","did_canon","caller_id",
                      "duration_sec","disposition","campaign","target",
                      "publisher_id","publisher_name",
-                     "payout","revenue","_ingested_at"]
+                     "payout","revenue","_ingested_at",
+                     "Date","Time"]
             await ensure_headers_exist("CPA Reporting", headers)
             
             # Write directly to sheet
