@@ -281,10 +281,36 @@ async def ringba_webhook(request: Request):
     try:
         # Get raw body for debugging
         raw_body = await request.body()
-        logger.info(f"📥 RAW WEBHOOK BODY: {raw_body.decode('utf-8', errors='replace')}")
+        raw_text = raw_body.decode('utf-8', errors='replace')
+        logger.info(f"📥 RAW WEBHOOK BODY: {raw_text}")
         
-        # Parse JSON body
-        body = await request.json()
+        # Fix malformed JSON from Ringba (empty values without proper JSON formatting)
+        # Replace empty values like "durationSec": , with "durationSec": null,
+        import re
+        
+        # Try to parse first, if it fails, apply fixes
+        try:
+            body = json.loads(raw_text)
+        except json.JSONDecodeError:
+            # Apply multiple fix patterns for malformed JSON
+            fixed_json = raw_text
+            # Pattern 1: ": " followed immediately by comma
+            fixed_json = re.sub(r':\s*,', ': null,', fixed_json)
+            # Pattern 2: ": " followed by closing brace
+            fixed_json = re.sub(r':\s*}', ': null}', fixed_json)
+            # Pattern 3: ": " at end of line followed by comma/brace on next line
+            fixed_json = re.sub(r':\s*\r?\n\s*([,}])', r': null\n\1', fixed_json)
+            # Pattern 4: ": " with whitespace before comma/brace (catch remaining cases)
+            fixed_json = re.sub(r':\s+([,}])', r': null\1', fixed_json)
+            
+            # Try parsing again
+            try:
+                body = json.loads(fixed_json)
+            except json.JSONDecodeError as e:
+                logger.error(f"❌ Could not fix malformed JSON: {e}")
+                logger.error(f"Original: {raw_text[:500]}")
+                logger.error(f"Fixed attempt: {fixed_json[:500]}")
+                return {"status": "error", "message": "Invalid JSON format - could not fix"}
         
         # Log incoming webhook for debugging
         logger.info(f"📥 WEBHOOK RECEIVED: {json.dumps(body, indent=2)}")
@@ -312,24 +338,40 @@ async def ringba_webhook(request: Request):
         # Log call details
         logger.info(f"📞 PROCESSING CALL: ID={call_id}, Caller={caller_id}, Campaign={campaign_name or campaign_id}, Publisher={body.get('publisherName', 'Unknown')}")
         
-        # Accept all calls - no campaign filtering
-        logger.info("✅ No campaign filtering - accepting all calls")
+        # Filter out "No Values" calls (empty target, no payout, no revenue)
+        target = body.get("target", "").strip()
+        payout = body.get("payout", 0)
+        revenue = body.get("revenue", 0)
         
-        # Prepare row data
+        # Skip calls with no value
+        if not target or payout == 0 or revenue == 0:
+            logger.info(f"🚫 FILTERED OUT: No Values call - Target: '{target}', Payout: {payout}, Revenue: {revenue}")
+            return {"status": "filtered_no_value"}
+        
+        logger.info("✅ Call has value - processing")
+        
+        # Prepare row data with safe value extraction
+        def safe_get(key, default=""):
+            value = body.get(key, default)
+            # Handle None values and empty strings
+            if value is None or value == "":
+                return default
+            return value
+        
         row = [
             call_id,
-            body.get("callStartUtc", ""),
+            safe_get("callStartUtc", ""),
             did_raw,
             did_canon,
             caller_id,
-            body.get("durationSec", ""),
-            body.get("disposition", ""),
+            safe_get("durationSec", ""),
+            safe_get("disposition", ""),
             campaign_name or campaign_id,
-            body.get("target", ""),
-            body.get("publisherId", ""),
-            body.get("publisherName", ""),
-            body.get("payout", ""),
-            body.get("revenue", ""),
+            safe_get("target", ""),
+            safe_get("publisherId", ""),
+            safe_get("publisherName", ""),
+            safe_get("payout", ""),
+            safe_get("revenue", ""),
             datetime.now(timezone.utc).isoformat()
         ]
         
