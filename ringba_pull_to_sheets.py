@@ -24,7 +24,7 @@ RINGBA_API_TOKEN = os.getenv("RINGBA_API_TOKEN")
 RINGBA_ACCOUNT_ID = os.getenv("RINGBA_ACCOUNT_ID")
 GOOGLE_CREDENTIALS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON")
 MASTER_CPA_DATA = os.getenv("MASTER_CPA_DATA")
-SHEET_NAME = os.getenv("SHEET_NAME", "CPA Reporting")  # Default to "CPA Reporting"
+SHEET_NAME = os.getenv("SHEET_NAME", "Ringba Raw")  # Default to "Ringba Raw"
 POLL_INTERVAL = int(os.getenv("POLL_INTERVAL", "60"))  # Poll every 60 seconds by default
 LOOKBACK_HOURS = int(os.getenv("LOOKBACK_HOURS", "24"))  # Look back 24 hours for initial sync
 
@@ -115,6 +115,9 @@ async def fetch_ringba_data(start_time: datetime, end_time: datetime) -> List[Di
     """Fetch call-level data from Ringba API"""
     if not RINGBA_API_TOKEN or not RINGBA_ACCOUNT_ID:
         raise ValueError("RINGBA_API_TOKEN and RINGBA_ACCOUNT_ID environment variables are required")
+    
+    # Log which account we're using for debugging
+    logger.info(f"🔍 Using Ringba Account ID: {RINGBA_ACCOUNT_ID}")
     
     url = f"https://api.ringba.com/v2/{RINGBA_ACCOUNT_ID}/insights"
     
@@ -458,6 +461,10 @@ async def main():
     if not RINGBA_ACCOUNT_ID:
         logger.error("RINGBA_ACCOUNT_ID environment variable is required")
         return
+    
+    # Log account ID for verification
+    logger.info(f"✅ Ringba Account ID configured: {RINGBA_ACCOUNT_ID}")
+    logger.info(f"✅ Ringba API Token configured: {'*' * 20}...{RINGBA_API_TOKEN[-10:] if len(RINGBA_API_TOKEN) > 10 else '***'}")
     if not GOOGLE_CREDENTIALS_JSON:
         logger.error("GOOGLE_CREDENTIALS_JSON environment variable is required")
         return
