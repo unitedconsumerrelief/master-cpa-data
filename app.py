@@ -338,17 +338,17 @@ async def ringba_webhook(request: Request):
         # Log call details
         logger.info(f"📞 PROCESSING CALL: ID={call_id}, Caller={caller_id}, Campaign={campaign_name or campaign_id}, Publisher={body.get('publisherName', 'Unknown')}")
         
-        # Filter out "No Values" calls (empty target, no payout, no revenue)
+        # Note: We write ALL calls to the sheet, regardless of value
+        # This allows for complete data tracking and analysis
         target = body.get("target", "").strip()
-        payout = body.get("payout", 0)
-        revenue = body.get("revenue", 0)
+        payout = body.get("payout", 0) or 0
+        revenue = body.get("revenue", 0) or 0
         
-        # Skip calls with no value
+        # Log call value status but don't filter
         if not target or payout == 0 or revenue == 0:
-            logger.info(f"🚫 FILTERED OUT: No Values call - Target: '{target}', Payout: {payout}, Revenue: {revenue}")
-            return {"status": "filtered_no_value"}
-        
-        logger.info("✅ Call has value - processing")
+            logger.info(f"ℹ️  Call with no value - Target: '{target}', Payout: {payout}, Revenue: {revenue} - Writing to sheet anyway")
+        else:
+            logger.info("✅ Call has value - processing")
         
         # Prepare row data with safe value extraction
         def safe_get(key, default=""):
