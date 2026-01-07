@@ -225,20 +225,12 @@ async def append_to_sheet(sheet_name: str, rows: List[List[Any]]):
     """Append rows to the specified sheet with timeout handling - preserves formulas in Q and R"""
     try:
         sheet_id = get_sheet_id()
-        # Append to A:Z range but only provide values for A-P
-        # This preserves formulas in Q and R columns
-        range_name = f"{sheet_name}!A:Z"
-        
-        # Extend each row to include empty cells for Q and R (columns 17-18)
-        # This ensures formulas in Q and R are preserved
-        extended_rows = []
-        for row in rows:
-            # Pad row to 18 columns (A-R), leaving Q and R empty for formulas
-            extended_row = row + [''] * (18 - len(row))
-            extended_rows.append(extended_row)
+        # Only append to A:P - do NOT touch Q and R columns
+        # INSERT_ROWS will preserve formulas in columns we don't write to
+        range_name = f"{sheet_name}!A:P"
         
         body = {
-            'values': extended_rows
+            'values': rows  # Only A-P data, no Q or R
         }
         
         # Use asyncio timeout to prevent hanging
@@ -252,13 +244,13 @@ async def append_to_sheet(sheet_name: str, rows: List[List[Any]]):
                         spreadsheetId=sheet_id,
                         range=range_name,
                         valueInputOption='RAW',
-                        insertDataOption='INSERT_ROWS',
+                        insertDataOption='INSERT_ROWS',  # This preserves formulas in columns we don't write to
                         body=body
                     ).execute()
                 ),
                 timeout=15.0  # 15 second timeout (increased for reliability)
             )
-            logger.info(f"Appended {len(rows)} rows to {sheet_name} sheet (preserving Q and R formulas)")
+            logger.info(f"Appended {len(rows)} rows to {sheet_name} sheet (A-P only, Q and R formulas preserved)")
         except asyncio.TimeoutError:
             logger.error(f"Timeout writing to {sheet_name} sheet - operation took too long")
             raise

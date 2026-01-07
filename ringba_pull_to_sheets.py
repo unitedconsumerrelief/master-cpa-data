@@ -402,26 +402,20 @@ async def write_to_sheets(sheets_service, rows: List[List[Any]], sheet_name: str
             body=body
         ).execute()
     
-    # Append rows - preserve formulas in Q and R by appending to wider range
+    # Append rows - only write to A:P, preserve formulas in Q and R
     if rows:
-        range_name = f"{sheet_name}!A:Z"
-        # Extend each row to include empty cells for Q and R (columns 17-18)
-        # This ensures formulas in Q and R are preserved
-        extended_rows = []
-        for row in rows:
-            # Pad row to 18 columns (A-R), leaving Q and R empty for formulas
-            extended_row = row + [''] * (18 - len(row))
-            extended_rows.append(extended_row)
-        
-        body = {'values': extended_rows}
+        # Only append to A:P - do NOT touch Q and R columns
+        # INSERT_ROWS will preserve formulas in columns we don't write to
+        range_name = f"{sheet_name}!A:P"
+        body = {'values': rows}  # Only A-P data, no Q or R
         sheets_service.spreadsheets().values().append(
             spreadsheetId=sheet_id,
             range=range_name,
             valueInputOption='RAW',
-            insertDataOption='INSERT_ROWS',
+            insertDataOption='INSERT_ROWS',  # This preserves formulas in columns we don't write to
             body=body
         ).execute()
-        logger.info(f"Appended {len(rows)} rows to {sheet_name} sheet (preserving Q and R formulas)")
+        logger.info(f"Appended {len(rows)} rows to {sheet_name} sheet (A-P only, Q and R formulas preserved)")
 
 async def process_new_data(sheets_service, start_time: datetime, end_time: datetime, existing_call_ids: set) -> int:
     """Fetch and process new data from Ringba, filtering out duplicates"""
