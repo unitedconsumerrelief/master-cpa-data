@@ -1,0 +1,26 @@
+services:
+  - type: worker
+    name: ringba-pull-to-sheets
+    env: python
+    plan: starter  # Use starter plan for better reliability (or free for testing)
+    pythonVersion: 3.11.10
+    buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+    startCommand: python ringba_pull_to_sheets.py
+    envVars:
+      - key: RINGBA_API_TOKEN
+        sync: false
+      - key: RINGBA_ACCOUNT_ID
+        sync: false
+      - key: GOOGLE_CREDENTIALS_JSON
+        sync: false
+      - key: MASTER_CPA_DATA
+        sync: false
+      - key: RINGBA_CAMPAIGNS
+        sync: false
+      - key: SHEET_NAME
+        value: "CPA Reporting"
+      - key: POLL_INTERVAL
+        value: "60"
+      - key: LOOKBACK_HOURS
+        value: "24"
+
