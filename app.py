@@ -259,7 +259,7 @@ async def background_writer():
                          "duration_sec","disposition","campaign","target",
                          "publisher_id","publisher_name",
                          "payout","revenue","_ingested_at"]
-                await ensure_headers_exist("Ringba Raw", headers)
+                await ensure_headers_exist("CPA Reporting", headers)
                 
                 # Flush up to 25 rows (reduced from 50 to prevent memory issues)
                 rows_to_flush = background_writer_queue[:25]
@@ -271,7 +271,7 @@ async def background_writer():
                     call_ids = [row[0] for row in rows_to_flush[:5]]
                     logger.info(f"📋 Call IDs being written: {call_ids}")
                     
-                    await append_to_sheet("Ringba Raw", rows_to_flush)
+                    await append_to_sheet("CPA Reporting", rows_to_flush)
                     logger.info(f"✅ Successfully flushed {len(rows_to_flush)} rows to Google Sheets")
                         
         except Exception as e:
@@ -413,10 +413,10 @@ async def ringba_webhook(request: Request):
                      "duration_sec","disposition","campaign","target",
                      "publisher_id","publisher_name",
                      "payout","revenue","_ingested_at"]
-            await ensure_headers_exist("Ringba Raw", headers)
+            await ensure_headers_exist("CPA Reporting", headers)
             
             # Write directly to sheet
-            await append_to_sheet("Ringba Raw", [row])
+            await append_to_sheet("CPA Reporting", [row])
             logger.info(f"✅ Successfully wrote call to sheet: {call_id}")
         except Exception as e:
             logger.error(f"❌ Error writing to sheet: {e}")
@@ -441,10 +441,10 @@ async def ringba_webhook(request: Request):
 async def refresh_map():
     """Build DID→Publisher map and update sheets"""
     try:
-        # Read Ringba Raw data
-        raw_data = await read_sheet_data("Ringba Raw")
+        # Read CPA Reporting data
+        raw_data = await read_sheet_data("CPA Reporting")
         if not raw_data or len(raw_data) <= 1:
-            raise HTTPException(status_code=400, detail="No data found in Ringba Raw sheet")
+            raise HTTPException(status_code=400, detail="No data found in CPA Reporting sheet")
         
         headers = raw_data[0]
         rows = raw_data[1:]
